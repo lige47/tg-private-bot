@@ -1,8 +1,10 @@
 import os
 import json
 import asyncio
+import html  # <--- 新增这个：Python自带的HTML处理库
 from pathlib import Path
 from telegram import Update, ChatPermissions
+from telegram.constants import ParseMode # <--- 建议加上这个，下面要用
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -10,6 +12,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+from telegram.helpers import mention_html # <--- 只保留 mention_html
 
 # ---------- 配置（必填环境变量） ----------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -80,11 +83,13 @@ async def _create_topic_for_user(bot, user_id: int, title: str) -> int:
         raise RuntimeError("创建 topic 未返回 message_thread_id")
     return int(thread_id)
 
-# 引入需要的工具
-from telegram.helpers import mention_html, escape_html
-
+# ---------- 修改后的辅助函数 ----------
 async def _ensure_thread_for_user(context: ContextTypes.DEFAULT_TYPE, user_id: int, display: str):
-    # 如果内存里有，说明不是新的
+    """
+    返回 (thread_id, is_new_topic)
+    is_new_topic: 如果是刚创建的或者是内存里没有记录的，返回 True
+    """
+    # 如果内存里有，说明不是新的，直接返回
     if user_id in user_to_thread:
         return user_to_thread[user_id], False 
     
@@ -92,53 +97,37 @@ async def _ensure_thread_for_user(context: ContextTypes.DEFAULT_TYPE, user_id: i
     try:
         thread_id = await _create_topic_for_user(context.bot, user_id, f"user_{user_id}_{display}")
     except Exception as e:
-        # 如果创建失败（比如话题数满了），可能需要清理旧话题或报错
+        # 如果创建失败（比如话题数满了），抛出异常让外层处理
         raise e
 
+    # 记录到内存和文件
     user_to_thread[user_id] = thread_id
     thread_to_user[thread_id] = user_id
     persist_mapping()
     
-    # 返回 (id, True) 表示这是新创建的
+    # 返回 (id, True) 表示这是新接入的用户话题
     return thread_id, True
 
-def _display_name_from_update(update: Update) -> str:
-    u = update.effective_user
-    if not u:
-        return "匿名"
-    name = u.full_name or u.username or str(u.id)
-    return name.replace("\n", " ")
-
-# ---------- 处理器 ----------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    if update.effective_chat.type != "private":
-        return
-    if user_verified.get(uid):
-        await update.message.reply_text("你已经验证过了，可以发送消息。")
-        return
-    await update.message.reply_text(VERIFY_QUESTION)
-
+# ---------- 修改后的私聊处理函数 ----------
 async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type != "private":
         return
 
     uid = update.effective_user.id
+    # 获取用户发的文本
     text = update.message.text or ""
-    # 获取用户对象，用来生成链接
-    user = update.effective_user
     
-    # 获取显示名，并进行HTML转义防止报错
-    user_full_name = escape_html(user.full_name or user.username or str(uid))
+    # 获取用户对象
+    user = update.effective_user
+    # 这里的 display 用于 Topic 标题，只取前几个字防止太长
     display = _display_name_from_update(update)
 
-    # 1. 验证流程 (保持不变)
-    # 注意：这里需要从持久化数据中读取，或者确保 user_verified 已经加载
-    # 假设你在 main 里面已经处理好了持久化加载
+    # 1. 验证流程 (验证状态需要持久化，这里假设你已经处理好 persistence)
+    # 如果重启后需要重新验证的问题还没改，这里只通过内存判断
     if not user_verified.get(uid):
         if text.strip() == VERIFY_ANSWER:
             user_verified[uid] = True
-            persist_mapping() # 记得保存验证状态
+            # persist_mapping() # 如果你把 verified 加入了持久化，记得取消注释这行
             await update.message.reply_text("验证成功！你现在可以发送消息了。")
         else:
             await update.message.reply_text("请先通过验证：" + VERIFY_QUESTION)
@@ -154,10 +143,12 @@ async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_T
 
     # 3. 如果是【新话题】，先发送一张“用户资料卡”
     if is_new_topic:
-        # 生成可点击的名字链接 <a href="tg://user?id=123">名字</a>
-        mention_link = mention_html(uid, user_full_name)
+        # 使用 html.escape 处理名字中的特殊字符
+        safe_name = html.escape(user.full_name or user.username or str(uid))
+        # 生成可点击的名字链接
+        mention_link = mention_html(uid, safe_name)
         
-        # 构造你想要的资料格式 (参考图二/图四)
+        # 构造资料卡 (HTML格式)
         info_text = (
             f"<b>新用户接入</b>\n"
             f"ID: <code>{uid}</code>\n"
@@ -169,10 +160,9 @@ async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_T
                 chat_id=GROUP_ID,
                 message_thread_id=thread_id,
                 text=info_text,
-                parse_mode="HTML" # 必须开启 HTML 模式链接才生效
+                parse_mode=ParseMode.HTML # 必须开启 HTML 模式链接才生效
             )
         except Exception as e:
-            # 资料卡发送失败不影响后续消息
             print(f"发送资料卡失败: {e}")
 
     # 4. 转发用户的实际消息（纯净版）
