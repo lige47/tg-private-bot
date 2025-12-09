@@ -80,15 +80,27 @@ async def _create_topic_for_user(bot, user_id: int, title: str) -> int:
         raise RuntimeError("创建 topic 未返回 message_thread_id")
     return int(thread_id)
 
-async def _ensure_thread_for_user(context: ContextTypes.DEFAULT_TYPE, user_id: int, display: str) -> int:
+# 引入需要的工具
+from telegram.helpers import mention_html, escape_html
+
+async def _ensure_thread_for_user(context: ContextTypes.DEFAULT_TYPE, user_id: int, display: str):
+    # 如果内存里有，说明不是新的
     if user_id in user_to_thread:
-        return user_to_thread[user_id]
-    # 创建 topic（如果群已满或权限问题会抛错）
-    thread_id = await _create_topic_for_user(context.bot, user_id, f"user_{user_id}_{display}")
+        return user_to_thread[user_id], False 
+    
+    # 尝试创建 topic
+    try:
+        thread_id = await _create_topic_for_user(context.bot, user_id, f"user_{user_id}_{display}")
+    except Exception as e:
+        # 如果创建失败（比如话题数满了），可能需要清理旧话题或报错
+        raise e
+
     user_to_thread[user_id] = thread_id
     thread_to_user[thread_id] = user_id
     persist_mapping()
-    return thread_id
+    
+    # 返回 (id, True) 表示这是新创建的
+    return thread_id, True
 
 def _display_name_from_update(update: Update) -> str:
     u = update.effective_user
@@ -108,46 +120,74 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(VERIFY_QUESTION)
 
 async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    1) 若未验证，判断答案；通过后标记。
-    2) 若验证通过，把用户消息转发到群里的对应 topic（自动创建 topic）。
-    """
     if update.effective_chat.type != "private":
         return
 
     uid = update.effective_user.id
     text = update.message.text or ""
+    # 获取用户对象，用来生成链接
+    user = update.effective_user
+    
+    # 获取显示名，并进行HTML转义防止报错
+    user_full_name = escape_html(user.full_name or user.username or str(uid))
     display = _display_name_from_update(update)
 
-    # 验证流程
+    # 1. 验证流程 (保持不变)
+    # 注意：这里需要从持久化数据中读取，或者确保 user_verified 已经加载
+    # 假设你在 main 里面已经处理好了持久化加载
     if not user_verified.get(uid):
         if text.strip() == VERIFY_ANSWER:
             user_verified[uid] = True
-            
-            # 【新增】：验证成功后，立即保存到持久化文件
-            persist_mapping() 
-            
+            persist_mapping() # 记得保存验证状态
             await update.message.reply_text("验证成功！你现在可以发送消息了。")
         else:
             await update.message.reply_text("请先通过验证：" + VERIFY_QUESTION)
         return
 
-    # 已验证：确保 topic，转发消息到该 topic（message_thread_id）
+    # 2. 获取话题 ID 和 新旧状态
     try:
-        thread_id = await _ensure_thread_for_user(context, uid, display)
+        # 注意：这里接收两个返回值
+        thread_id, is_new_topic = await _ensure_thread_for_user(context, uid, display)
     except Exception as e:
-        await update.message.reply_text(f"创建或获取话题失败：{e}")
+        await update.message.reply_text(f"无法建立连接：{e}")
         return
 
-    forward_text = f"来自用户 {uid} ({display}) 的私聊消息：\n\n{text}"
-    # 如果用户发送的不是纯文本，简单处理转发媒体：这里仅处理文本；可扩展处理图片/文件/语音
+    # 3. 如果是【新话题】，先发送一张“用户资料卡”
+    if is_new_topic:
+        # 生成可点击的名字链接 <a href="tg://user?id=123">名字</a>
+        mention_link = mention_html(uid, user_full_name)
+        
+        # 构造你想要的资料格式 (参考图二/图四)
+        info_text = (
+            f"<b>新用户接入</b>\n"
+            f"ID: <code>{uid}</code>\n"
+            f"名字: {mention_link}\n"
+            f"#id{uid}" 
+        )
+        try:
+            await context.bot.send_message(
+                chat_id=GROUP_ID,
+                message_thread_id=thread_id,
+                text=info_text,
+                parse_mode="HTML" # 必须开启 HTML 模式链接才生效
+            )
+        except Exception as e:
+            # 资料卡发送失败不影响后续消息
+            print(f"发送资料卡失败: {e}")
+
+    # 4. 转发用户的实际消息（纯净版）
+    # 不加任何前缀，直接发 text
     try:
-        await context.bot.send_message(chat_id=GROUP_ID, message_thread_id=thread_id, text=forward_text)
+        await context.bot.send_message(
+            chat_id=GROUP_ID, 
+            message_thread_id=thread_id, 
+            text=text
+        )
     except Exception as e:
-        await update.message.reply_text(f"转发到群组话题失败：{e}")
+        await update.message.reply_text(f"发送失败：{e}")
         return
 
-    await update.message.reply_text("消息已发送。")
+    await update.message.reply_text("已发送。")
 
 async def handle_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
