@@ -147,7 +147,7 @@ async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text(f"转发到群组话题失败：{e}")
         return
 
-    await update.message.reply_text("消息已发送，管理员会在群组的对应话题中回复你。")
+    await update.message.reply_text("消息已发送。")
 
 async def handle_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
