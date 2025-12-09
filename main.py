@@ -135,45 +135,40 @@ async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_T
     await update.message.reply_text("消息已发送，管理员会在群组的对应话题中回复你。")
 
 async def handle_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    群组内消息（在论坛 topic 中）：把管理员在 topic 中的回复转发回对应用户。
-    注意：
-      - 仅处理位于 GROUP_ID 的消息
-      - 需要 message_thread_id（代表 topic）
-      - 忽略机器人自己发的消息
-    """
     msg = update.message
     if not msg:
         return
     if update.effective_chat.id != GROUP_ID:
         return
 
-    # 要求处在某个 topic（message_thread_id 不为 None）
     thread_id = getattr(msg, "message_thread_id", None)
     if thread_id is None:
         return
 
-    # 忽略 bot 自己的消息
     if msg.from_user and msg.from_user.is_bot:
         return
 
-    # 找到对应用户
     target_user = thread_to_user.get(int(thread_id))
     if not target_user:
-        # 可能是管理员在新 topic 里手动输入标题，尝试从 topic 名称里解析用户 id（可选）
-        # 这里简单忽略未映射的 topic
         return
 
-    # 将群组 topic 中的消息转发或重发给用户（这里使用 send_message，可根据需要改为 forward_message）
-    sender = msg.from_user.full_name if msg.from_user else "群内用户"
+    # --- 修改重点开始 ---
+    
+    # 获取管理员回复的文本
     text = msg.text or ""
-    to_user_text = f"群组（话题 {thread_id}）中由 {sender} 的回复：\n\n{text}"
+    
+    # 如果管理员发的是纯图片/表情包（没有文字），text 会是空的，直接跳过，防止报错
+    if not text:
+        return
+
+    # 【这里改了】：直接把 text 发给用户，不要加任何前缀
+    to_user_text = text 
+    
+    # --- 修改重点结束 ---
+
     try:
         await context.bot.send_message(chat_id=target_user, text=to_user_text)
-        # 可选：在群组中确认已发送
-        # await context.bot.send_message(chat_id=GROUP_ID, message_thread_id=thread_id, text="已将回复转发给用户。")
     except Exception:
-        # 发送失败，可能是用户未与 bot 开始对话或被封禁，给管理员提示
         try:
             await context.bot.send_message(
                 chat_id=GROUP_ID,
@@ -182,7 +177,6 @@ async def handle_group_message(update: Update, context: ContextTypes.DEFAULT_TYP
             )
         except Exception:
             pass
-
 # ---------- 启动 ----------
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
