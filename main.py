@@ -34,7 +34,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_verified[user_id] = True
             await update.message.reply_text("验证成功！你现在可以和我聊天了。")
         else:
-            await update.message.reply_text("验证失败，请重新输入密码。")
+            await update.message.reply_text("验证失败，请重新输入密码：666")
         return
 
     topic = user_topic.get(user_id, "general")
