@@ -16,7 +16,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID = int(os.getenv("GROUP_ID", "0"))           # 目标群（已开启论坛/Topics）的 chat_id
 VERIFY_QUESTION = os.getenv("VERIFY_QUESTION", "请输入访问密码：")
 VERIFY_ANSWER = os.getenv("VERIFY_ANSWER", "123456")
-PERSIST_FILE = Path(os.getenv("MAPPING_FILE", "topic_mapping.json"))
+# 强制把文件路径指向我们刚刚挂载的 /data 目录
+PERSIST_FILE = Path("/data/topic_mapping.json")
 
 if not BOT_TOKEN:
     raise RuntimeError("请设置 BOT_TOKEN 环境变量")
@@ -188,12 +189,16 @@ def main():
 
     # 私聊：/start 与私聊文本
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_private_message))
+    
+    # 【修改点 1】这里原来的 filters.PRIVATE 改为了 filters.ChatType.PRIVATE
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_private_message))
 
     # 群组内（Topics）消息处理：包括管理员在 topic 中回复
     # 只过滤 GROUP_ID 的消息（在 handler 内再检查），并要求为群组消息
-    app.add_handler(MessageHandler(filters.Chat(GROUP_ID) & filters.TEXT & ~filters.COMMAND, handle_group_message))
+    # 【修改点 2】建议显式写 filters.Chat(chat_id=GROUP_ID)
+    app.add_handler(MessageHandler(filters.Chat(chat_id=GROUP_ID) & filters.TEXT & ~filters.COMMAND, handle_group_message))
 
+    print("Bot is starting polling...")
     # 启动轮询
     app.run_polling()
 
