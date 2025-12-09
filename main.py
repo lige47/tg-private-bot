@@ -11,7 +11,6 @@ from telegram.ext import (
 VERIFY_QUESTION = os.getenv("VERIFY_QUESTION", "请输入访问密码：")
 VERIFY_ANSWER = os.getenv("VERIFY_ANSWER", "123456")
 
-# 记录用户验证状态与当前话题
 user_verified = {}
 user_topic = {}
 
@@ -23,15 +22,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("你已经验证过了，可以继续聊天。")
         return
 
-    await update.message.reply_text(f"欢迎！
-{VERIFY_QUESTION}")
+    await update.message.reply_text(f"欢迎！\n{VERIFY_QUESTION}")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text.strip()
 
-    # --- 未验证用户必须先回答 ---
     if not user_verified.get(user_id):
         if text == VERIFY_ANSWER:
             user_verified[user_id] = True
@@ -40,11 +37,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("验证失败，请重新输入密码。")
         return
 
-    # --- 已验证：处理话题 ---
     topic = user_topic.get(user_id, "general")
-
-    response = f"你当前的话题是：{topic}
-你说：{text}"
+    response = f"你当前的话题是：{topic}\n你说：{text}"
     await update.message.reply_text(response)
 
 
@@ -65,7 +59,6 @@ async def set_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"已切换话题为：{topic_name}")
 
 
-# ---- Bot 主程序 ----
 def main():
     token = os.getenv("BOT_TOKEN")
     if not token:
