@@ -29,25 +29,36 @@ if GROUP_ID == 0:
 user_to_thread = {}
 # message_thread_id -> user_id
 thread_to_user = {}
+# user_id -> bool
+user_verified = {}   # <--- 注意这里仍然声明为全局变量
 
 if PERSIST_FILE.exists():
     try:
         data = json.loads(PERSIST_FILE.read_text(encoding="utf-8"))
         user_to_thread = {int(k): int(v) for k, v in data.get("user_to_thread", {}).items()}
         thread_to_user = {int(k): int(v) for k, v in data.get("thread_to_user", {}).items()}
+        # 【新增】读取验证状态
+        user_verified = {int(k): v for k, v in data.get("user_verified", {}).items()}
     except Exception:
+        # 异常处理：如果文件损坏，清空所有数据
         user_to_thread = {}
         thread_to_user = {}
+        user_verified = {} # 【新增】清空验证状态
 
 def persist_mapping():
     data = {
         "user_to_thread": {str(k): v for k, v in user_to_thread.items()},
         "thread_to_user": {str(k): v for k, v in thread_to_user.items()},
+        # 【新增】保存验证状态 (由于值是 bool，无需转换)
+        "user_verified": {str(k): v for k, v in user_verified.items()}, 
     }
     PERSIST_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 # ---------- 验证状态（内存） ----------
-user_verified = {}   # user_id -> bool
+# ⚠️ 注意：原来的 user_verified = {} 这一行现在要删除或注释掉，
+# 因为它已经在上面从文件中加载了。
+# 如果不删除，它会覆盖掉从文件加载的数据。
+# ------------------------------------
 
 # ---------- 帮助函数 ----------
 async def _create_topic_for_user(bot, user_id: int, title: str) -> int:
@@ -112,6 +123,10 @@ async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_T
     if not user_verified.get(uid):
         if text.strip() == VERIFY_ANSWER:
             user_verified[uid] = True
+            
+            # 【新增】：验证成功后，立即保存到持久化文件
+            persist_mapping() 
+            
             await update.message.reply_text("验证成功！你现在可以发送消息了。")
         else:
             await update.message.reply_text("请先通过验证：" + VERIFY_QUESTION)
