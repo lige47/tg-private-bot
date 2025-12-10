@@ -16,6 +16,7 @@ from telegram.helpers import mention_html
 
 # ---------- 配置（必填环境变量） ----------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+# 确保 GROUP_ID 是 int，且通常是 -100 开头
 GROUP_ID = int(os.getenv("GROUP_ID", "0"))
 VERIFY_QUESTION = os.getenv("VERIFY_QUESTION", "请输入访问密码：")
 VERIFY_ANSWER = os.getenv("VERIFY_ANSWER", "123456")
@@ -107,8 +108,6 @@ def _display_name_from_update(update: Update) -> str:
 async def id_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /id 命令：查看 ID
-    - 私聊：返回用户 ID
-    - 群组：返回群组 ID 和 用户 ID
     """
     chat = update.effective_chat
     user = update.effective_user
@@ -120,11 +119,13 @@ async def id_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat.type != "private":
         # 在列表最前面插入群组ID
         msg_lines.insert(0, f"📢 群组 ID: <code>{chat.id}</code>")
-        # 如果是在 Topic 中，顺便显示 Topic ID (message_thread_id) 方便调试，不要也可以删掉下面这行
-        if update.effective_message.message_thread_id:
-             msg_lines.append(f"💬 话题 ID: <code>{update.effective_message.message_thread_id}</code>")
+        
+        # 话题 ID (如果存在)
+        thread_id = update.effective_message.message_thread_id
+        if thread_id:
+             msg_lines.append(f"💬 话题 ID: <code>{thread_id}</code>")
 
-    # 发送结果，使用 HTML 模式以便点击复制
+    # 发送结果
     await update.message.reply_text("\n".join(msg_lines), parse_mode=ParseMode.HTML)
 
 
@@ -283,7 +284,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ban", ban_command))
     app.add_handler(CommandHandler("unban", unban_command))
-    app.add_handler(CommandHandler("id", id_command)) # 【新增】注册 /id 命令
+    app.add_handler(CommandHandler("id", id_command))
 
     # 消息处理
     app.add_handler(MessageHandler(
@@ -291,236 +292,6 @@ def main():
         handle_private_message
     ))
 
-    app.add_handler(MessageHandler(
-        filters.Chat(chat_id=GROUP_ID) & filters.TEXT & ~filters.COMMAND, 
-        handle_group_message
-    ))
-
-    print("Polling started.")
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()    thread_id = getattr(resp, "message_thread_id", None)
-    if thread_id is None:
-        thread_id = resp.get("message_thread_id") if isinstance(resp, dict) else None
-    if thread_id is None:
-        raise RuntimeError("创建 topic 未返回 message_thread_id")
-    return int(thread_id)
-
-async def _ensure_thread_for_user(context: ContextTypes.DEFAULT_TYPE, user_id: int, display: str):
-    if user_id in user_to_thread:
-        return user_to_thread[user_id], False 
-    
-    try:
-        thread_id = await _create_topic_for_user(context.bot, user_id, f"user_{user_id}_{display}")
-    except Exception as e:
-        raise e
-
-    user_to_thread[user_id] = thread_id
-    thread_to_user[thread_id] = user_id
-    persist_mapping()
-    return thread_id, True
-
-def _display_name_from_update(update: Update) -> str:
-    u = update.effective_user
-    if not u:
-        return "匿名"
-    name = u.full_name or u.username or str(u.id)
-    return name.replace("\n", " ")
-
-# ---------- 管理员命令：封禁与解封 ----------
-
-async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    用法：
-    1. 在群组 Topic 内直接发送 /ban
-    2. 发送 /ban 123456789
-    """
-    # 仅允许在管理群组内操作
-    if update.effective_chat.id != GROUP_ID:
-        return
-
-    target_uid = None
-
-    # 1. 尝试从参数获取 ID (例如 /ban 123456)
-    if context.args and context.args[0].isdigit():
-        target_uid = int(context.args[0])
-    
-    # 2. 如果没参数，尝试从当前 Topic 对应的用户获取
-    elif update.effective_message.message_thread_id:
-        thread_id = update.effective_message.message_thread_id
-        target_uid = thread_to_user.get(thread_id)
-    
-    if not target_uid:
-        await update.message.reply_text("❌ 无法识别目标用户。\n请在用户话题内使用，或指定ID：/ban 123456")
-        return
-
-    # 执行封禁
-    if target_uid in banned_users:
-        await update.message.reply_text(f"用户 {target_uid} 已经在黑名单中了。")
-        return
-
-    banned_users.add(target_uid)
-    persist_mapping() # 保存
-    await update.message.reply_text(f"🚫 用户 {target_uid} 已被封禁。他将无法再发送消息。")
-
-async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    用法：
-    1. 在群组 Topic 内直接发送 /unban
-    2. 发送 /unban 123456789
-    """
-    if update.effective_chat.id != GROUP_ID:
-        return
-
-    target_uid = None
-
-    # 1. 尝试从参数获取
-    if context.args and context.args[0].isdigit():
-        target_uid = int(context.args[0])
-    # 2. 尝试从 Topic 获取
-    elif update.effective_message.message_thread_id:
-        thread_id = update.effective_message.message_thread_id
-        target_uid = thread_to_user.get(thread_id)
-    
-    if not target_uid:
-        await update.message.reply_text("❌ 无法识别目标用户。\n请在用户话题内使用，或指定ID：/unban 123456")
-        return
-
-    if target_uid not in banned_users:
-        await update.message.reply_text(f"用户 {target_uid} 不在黑名单中。")
-        return
-
-    banned_users.remove(target_uid)
-    persist_mapping()
-    await update.message.reply_text(f"✅ 用户 {target_uid} 已解封。")
-
-
-# ---------- 用户消息处理 ----------
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    if update.effective_chat.type != "private":
-        return
-    
-    # 【检查封禁】
-    if uid in banned_users:
-        # 被封禁用户不给任何回应，或者提示被封禁
-        return 
-
-    if user_verified.get(uid):
-        await update.message.reply_text("你已经验证过了，可以发送消息。")
-        return
-    await update.message.reply_text(VERIFY_QUESTION)
-
-async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.type != "private":
-        return
-
-    uid = update.effective_user.id
-    text = update.message.text or ""
-    
-    # 【检查封禁】
-    if uid in banned_users:
-        await update.message.reply_text("🚫 你已被管理员禁止发送消息。")
-        return
-
-    user = update.effective_user
-    display = _display_name_from_update(update)
-
-    # 验证流程
-    if not user_verified.get(uid):
-        if text.strip() == VERIFY_ANSWER:
-            user_verified[uid] = True
-            persist_mapping()
-            await update.message.reply_text("验证成功！你现在可以发送消息了。")
-        else:
-            await update.message.reply_text("请先通过验证：" + VERIFY_QUESTION)
-        return
-
-    # 获取/创建话题
-    try:
-        thread_id, is_new_topic = await _ensure_thread_for_user(context, uid, display)
-    except Exception as e:
-        await update.message.reply_text(f"系统错误：{e}")
-        return
-
-    # 新用户发送资料卡
-    if is_new_topic:
-        safe_name = html.escape(user.full_name or user.username or str(uid))
-        mention_link = mention_html(uid, safe_name)
-        info_text = (
-            f"<b>新用户接入</b>\n"
-            f"ID: <code>{uid}</code>\n"
-            f"名字: {mention_link}\n"
-            f"#id{uid}" 
-        )
-        try:
-            await context.bot.send_message(
-                chat_id=GROUP_ID,
-                message_thread_id=thread_id,
-                text=info_text,
-                parse_mode=ParseMode.HTML
-            )
-        except Exception as e:
-            print(f"发送资料卡失败: {e}")
-
-    # 转发消息
-    try:
-        await context.bot.send_message(chat_id=GROUP_ID, message_thread_id=thread_id, text=text)
-    except Exception as e:
-        await update.message.reply_text("消息发送失败。")
-        return
-
-    await update.message.reply_text("已发送。")
-
-async def handle_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """管理员回复用户"""
-    msg = update.message
-    if not msg or update.effective_chat.id != GROUP_ID:
-        return
-
-    thread_id = getattr(msg, "message_thread_id", None)
-    if thread_id is None:
-        return
-
-    if msg.from_user and msg.from_user.is_bot:
-        return
-
-    # 检查是否是命令（防止 /ban 被当做回复发给用户）
-    if msg.text and msg.text.startswith("/"):
-        return
-
-    target_user = thread_to_user.get(int(thread_id))
-    if not target_user:
-        return
-
-    text = msg.text or ""
-    if not text:
-        return
-
-    try:
-        await context.bot.send_message(chat_id=target_user, text=text)
-    except Exception:
-        pass
-
-# ---------- 启动 ----------
-def main():
-    print("Bot is starting...")
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    # 注册命令
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("ban", ban_command))    # 新增
-    app.add_handler(CommandHandler("unban", unban_command)) # 新增
-
-    # 消息处理
-    app.add_handler(MessageHandler(
-        filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, 
-        handle_private_message
-    ))
-
-    # 群组消息 (注意：这里必须把 COMMAND 过滤掉，否则管理员发 /ban 也会被当成普通回复转发给用户)
     app.add_handler(MessageHandler(
         filters.Chat(chat_id=GROUP_ID) & filters.TEXT & ~filters.COMMAND, 
         handle_group_message
